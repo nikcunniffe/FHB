@@ -1,0 +1,544 @@
+---
+title: "Modelling aphid mediated dynamics of Fusarium head blight"
+author: "Nik Cunniffe & Mike Jeger"
+date: "2025-07-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(deSolve)
+library(fields)
+library(sfsmisc)
+```
+
+## Model equations
+
+#### Complex model
+
+```{r echo=T,odeRHSFull}
+fullModel <- function(t, y, par)
+{
+  # extract state variables
+  X <- y[1]
+  Y <- y[2]
+  US <- y[3]
+  UI <- y[4]
+  VS <- y[5]
+  VI <- y[6]
+  S <- y[7]
+  I <- y[8]
+  
+  # derived state variables
+  WS <- US + VS
+  WI <- UI + VI
+  
+  # extract parameters
+  a <- par$a
+  bS <- par$bS
+  dS <- par$dS
+  M <- par$M
+  e <- par$e
+  bI <- par$bI
+  dI <- par$dI
+  v <- par$v
+  Gamma <- par$Gamma
+  c <- par$c
+  eta <- par$eta
+  alpha <- par$alpha
+  mu <- par$mu
+  K <- par$K
+  r <- par$r
+  beta <- par$beta
+  delta <- par$delta
+  
+  # calculate right hand sides of differential equations
+  diffX <- (a*WS + (bS-dS)*X)*(1 - (X+WS)/M) - e*(X+WS)*X/M
+  diffY <- (a*WI + (bI-dI)*Y)*(1 - (Y+WI)/M) - e*(Y+WI)*Y/M
+  
+  RoFU <- (S*US+I*UI)/Gamma
+  RoFV <- (S*VS+I*VI)/Gamma
+  
+  diffUS <- (RoFU/(S+v*I))*(1 - (X+WS)/M) - US/Gamma - c*US + eta*VS + e*(X+WS)*X/M
+  diffUI <- -alpha*UI + (v*RoFU/(S+v*I))*(1 - (Y+WI)/M) - UI/Gamma - c*UI + eta*VI
+  
+  diffVS <- (RoFV/(S+I))*(1 - (X+WS)/M) - VS/Gamma - (c + eta)*VS
+  diffVI <- alpha*US + (RoFV/(S+I))*(1 - (Y+WI)/M) - VI/Gamma - (c + eta)*VI + e*(Y+WI)*Y/M
+  
+  diffS <- mu*(K - (S + I)) - r*I*S/K - beta*VS*S
+  diffI <- r*I*S/K + beta*VS*S - delta*I
+  
+  # return rates of change
+  return(list(c(diffX, 
+                diffY,
+                diffUS,
+                diffUI,
+                diffVS,
+                diffVI,
+                diffS,
+                diffI)))
+}
+```
+
+#### Simpler model
+
+```{r echo=T,odeRHSSimplified}
+simpleModel <- function(t, y, par)
+{
+  # extract state variables
+  U <- y[1]
+  V <- y[2]
+  S <- y[3]
+  I <- y[4]
+  
+  # extract parameters
+  alpha <- par$alpha
+  v <- par$v
+  eta <- par$eta
+  c <- par$c
+  e <- par$e
+  M <- par$M
+  mu <- par$mu
+  K <- par$K
+  r <- par$r
+  beta <- par$beta
+  delta <- par$delta
+
+  # calculate right hand sides of differential equations
+  diffU <- -alpha*v*I*U/(S+v*I) + eta*V - c*U + e*(M*S - (U+V)*S/(S+I))
+  diffV <- alpha*v*I*U/(S+v*I) - eta*V - c*V + e*(M*I - (U+V)*I/(S+I))
+  
+  diffS <- mu*(K - (S + I)) - r*I*S/K - beta*V*S/K
+  diffI <- r*I*S/K + beta*V*S/K - delta*I
+  
+  # return rates of change
+  return(list(c(diffU, 
+                diffV,
+                diffS,
+                diffI)))
+}
+```
+
+## Model parameterisation
+
+```{r defParamsNIV}
+# Parameterisation for NIV
+defParmFullNIV <- list(a  = 0.8, # nymph production from alatae
+                       bS = 0.8, # nymph production from aptera on susceptible spike
+                       dS = 0.1, # mortality rate of aptera on a susceptible spike 
+                       M  = 50,  # aphid carrying capacity
+                       e  = 0.2, # maximum formation rate of alatae from aptera on spikes
+                       bI = 1.0, # nymph production from aptera on infected spike
+                       dI = 0.1, # mortality rate of apterae on an infected spike 
+                       v  = 1.2, # bias of unexposed alatae to land on infected spikes 
+                       c  = 0.18,# mortality rate of alatae after producing nymphs 
+                       mu = 0.1, # appearance rate of spikes on tillers
+                       K  = 300, # maximum population density of spikes 
+                       r  = 0.1, # per spike infection rate by splash (conidia) dispersal 
+                       eta   = 0.2,  # loss rate of chemotype from exposed alatae 
+                       alpha = 0.5,  # exposure coefficient of unexposed alatae on infected spikes
+                       Gamma = 5,    # time period an alate remains on a spike 
+                       beta  = 0.01, # per alate transmission rate of Fusarium by alate aphids
+                       delta = 0.02) # rate of removal to the postinfectious compartment
+
+# Initial conditions: same for both chemotypes
+yZeroFull <- c(X = 1,
+               Y = 0,
+               US = 1,
+               UI = 0,
+               VS = 0,
+               VI = 0,
+               S = 5,
+               I = 5)
+
+# Initial conditions: same for both chemotypes
+yZeroSimple <- c(U = 1,
+                 V = 0,
+                 S = 5,
+                 I = 5)
+
+# Parameterisation for DON is an update to that for NIV
+defParmFullDON <- defParmFullNIV
+
+defParmFullDON$r <- 1.5 * defParmFullNIV$r           # 150% of value for NIV
+defParmFullDON$bI <- 0.6 * defParmFullNIV$bI         # 60% of value for NIV
+defParmFullDON$dI <- 1.2 * defParmFullNIV$dI         # 120% of value for NIV
+defParmFullDON$v  <- 0.25 * defParmFullNIV$v         # 25% of value for NIV
+defParmFullDON$alpha  <- 0.1 * defParmFullNIV$alpha  # 10% of value for NIV
+defParmFullDON$beta <- 0.5 * defParmFullNIV$beta     # 50% of value for NIV
+```
+
+## Fig. 1. Default parameterisation of the full model
+
+The (hidden) code below shows how to replicate Fig. 1 in the manuscript.
+```{R echo=F,solveODEPlotGraphsNIV,fig.height = 3,fig.align = 'center'}
+tMax <- 80
+maxPerSpike <- 45
+thisP <- defParmFullNIV
+odeRet <- data.frame(ode(y = yZeroFull, 
+                           times = seq(0,tMax,length.out=101), 
+                           func = fullModel, 
+                           parms = thisP, 
+                           method = "ode23"))
+
+odeRetNIVFull <- odeRet
+
+par(las=1)
+par(mfrow = c(1,3))
+
+plot(odeRet$time,
+     odeRet$S,
+     ty="l",
+     col="forestgreen",
+     lwd=2,
+     xlab="Time (days)",
+     ylab="Spikes (per square metre)",
+     main="NIV. Spikes",
+     ylim=c(0,thisP$K))
+lines(odeRet$time,
+      odeRet$I,
+      lwd=2,
+      col="red2")
+legend("topright",
+       c("S","I"),
+       col=c("forestgreen","red2"),
+       lwd=2,
+       lty=1)
+
+plot(odeRet$time,
+     odeRet$X,
+     ty="l",
+     col="olivedrab",
+     lwd=2,
+     xlab="Time (days)",
+     ylab="Apterae (per spike)",
+     main="NIV. Aptera density",
+     ylim=c(0,maxPerSpike))
+lines(odeRet$time,
+      odeRet$Y,
+      lwd=2,
+      col="red4")
+legend("topright",
+       c("X","Y"),
+       col=c("olivedrab","red4"),
+       lwd=2,
+       lty=1)
+
+plot(odeRet$time,
+     odeRet$US,
+     ty="l",
+     col="lightgreen",
+     lwd=2,
+     xlab="Time (days)",
+     ylab="Alates (per spike)",
+     main="NIV. Alate density",
+     ylim=c(0,maxPerSpike))
+lines(odeRet$time,
+      odeRet$UI,
+      lwd=2,
+      col="cyan4")
+lines(odeRet$time,
+      odeRet$VS,
+      lwd=2,
+      col="pink")
+lines(odeRet$time,
+      odeRet$VI,
+      lwd=2,
+      col="maroon2")
+legend("topright",
+       c(expression(U[S]),expression(U[I]),expression(V[S]),expression(V[I])),
+       col=c("lightgreen","cyan4","pink","maroon2"),
+       lwd=2,
+       ncol=2,
+       lty=1)
+```
+
+```{R echo=F,solveODEPlotGraphsDON,fig.height = 3,fig.align = 'center'}
+thisP <- defParmFullDON
+odeRet <- data.frame(ode(y = yZeroFull, 
+                           times = seq(0,tMax,length.out=101), 
+                           func = fullModel, 
+                           parms = thisP, 
+                           method = "ode23"))
+
+odeRetDONFull <- odeRet
+
+par(las=1)
+par(mfrow = c(1,3))
+
+plot(odeRet$time,
+     odeRet$S,
+     ty="l",
+     col="forestgreen",
+     lwd=2,
+     xlab="Time (days)",
+     ylab="Spikes (per square metre)",
+     main="DON. Spikes",
+     ylim=c(0,thisP$K))
+lines(odeRet$time,
+      odeRet$I,
+      lwd=2,
+      col="red2")
+legend("topright",
+       c("S","I"),
+       col=c("forestgreen","red2"),
+       lwd=2,
+       lty=1)
+
+plot(odeRet$time,
+     odeRet$X,
+     ty="l",
+     col="olivedrab",
+     lwd=2,
+     xlab="Time (days)",
+     ylab="Apterae (per spike)",
+     main="DON. Aptera density",
+     ylim=c(0,maxPerSpike))
+lines(odeRet$time,
+      odeRet$Y,
+      lwd=2,
+      col="red4")
+legend("topright",
+       c("X","Y"),
+       col=c("olivedrab","red4"),
+       lwd=2,
+       lty=1)
+
+plot(odeRet$time,
+     odeRet$US,
+     ty="l",
+     col="lightgreen",
+     lwd=2,
+     xlab="Time (days)",
+     ylab="Alates (per spike)",
+     main="DON. Alate density",
+     ylim=c(0,maxPerSpike))
+lines(odeRet$time,
+      odeRet$UI,
+      lwd=2,
+      col="cyan4")
+lines(odeRet$time,
+      odeRet$VS,
+      lwd=2,
+      col="pink")
+lines(odeRet$time,
+      odeRet$VI,
+      lwd=2,
+      col="maroon2")
+legend("topright",
+       c(expression(U[S]),expression(U[I]),expression(V[S]),expression(V[I])),
+       col=c("lightgreen","cyan4","pink","maroon2"),
+       lwd=2,
+       ncol=2,
+       lty=1)
+
+```
+
+## Fig. 2. Comparing simplified model with full model
+
+The (hidden) code below shows how to replicate Fig. 2 in the manuscript.
+
+```{R echo=F,solveODEPlotGraphsNIVSimple,fig.height = 3,fig.align = 'center'}
+totAlateMax <- 9000
+siMax <- 325
+
+thisPSimple <- defParmFullNIV
+
+odeRet <- data.frame(ode(y = yZeroSimple, 
+                           times = seq(0,tMax,length.out=101), 
+                           func = simpleModel, 
+                           parms = thisPSimple, 
+                           method = "ode23"))
+
+par(las=1)
+par(mfrow = c(1,3))
+
+plot(odeRet$time,
+     odeRet$S,
+     ty="l",
+     col="forestgreen",
+     lwd=2,
+     xlab="t, time (days)",
+     ylab="Spikes (per square metre)",
+     main="NIV. Spikes",
+     ylim=c(0,siMax),lty=3)
+lines(odeRet$time,
+      odeRet$I,
+      lwd=2,
+      col="red2",lty=3)
+
+lines(odeRetNIVFull$time,
+     odeRetNIVFull$S,
+     lty=1,lwd=2,col="forestgreen")
+
+lines(odeRetNIVFull$time,
+     odeRetNIVFull$I,
+     lty=1,lwd=2,col="red2")
+
+legend("topright",
+       c("S","I","S (full)","I (full)"),
+       col=c("forestgreen","red2"),
+       lwd=2,
+       lty=c(3,3,1,1),ncol=2)
+
+plot(odeRet$time,
+     odeRet$U,
+     ty="l",
+     col="green",
+     lwd=2,
+     xlab="t, time (days)",
+     ylab="Alates (per square metre)",
+     main="NIV. Alates (per square metre)",
+     ylim=c(0,totAlateMax),lty=3)
+lines(odeRet$time,
+      odeRet$V,
+      lwd=2,
+      col="deeppink",lty=3)
+
+fullU <- odeRetNIVFull$S * odeRetNIVFull$US + odeRetNIVFull$I * odeRetNIVFull$UI
+fullV <- odeRetNIVFull$S * odeRetNIVFull$VS + odeRetNIVFull$I * odeRetNIVFull$VI
+
+fullUPerSpike <- fullU / (odeRetNIVFull$S + odeRetNIVFull$I)
+fullVPerSpike <- fullV / (odeRetNIVFull$S + odeRetNIVFull$I)
+
+lines(odeRetNIVFull$time,
+     fullU,
+     lty=1,lwd=2,col="green")
+
+lines(odeRetNIVFull$time,
+     fullV,
+     lty=1,lwd=2,col="deeppink")
+
+legend("topright",
+       c("U","V", "U (full)", "V (full)"),
+       col=c("green","deeppink"),
+       lwd=2,
+       lty=c(3,3,1,1),ncol=2)
+
+plot(odeRet$time,
+     odeRet$U/(odeRet$S+odeRet$I),
+     ty="l",
+     col="green",
+     lwd=2,
+     xlab="t, time (days)",
+     ylab="Alates (per spike)",
+     main="NIV. Alates (per spike)",
+     ylim=c(0,maxPerSpike),lty=3)
+lines(odeRet$time,
+      odeRet$V/(odeRet$S+odeRet$I),
+      lwd=2,
+      col="deeppink",lty=3)
+lines(odeRetNIVFull$time,
+     fullUPerSpike,
+     lty=1,lwd=2,col="green")
+lines(odeRetNIVFull$time,
+     fullVPerSpike,
+     lty=1,lwd=2,col="deeppink")
+legend("topright",
+       c("U/(S+I)","V/(S+I)", "U/(S+I) (full)", "V/(S+I) (full)"),
+       col=c("green","deeppink"),
+       lwd=2,
+       lty=c(3,3,1,1))
+
+
+```
+
+```{R echo=F,solveODEPlotGraphsDONSimple,fig.height = 3,fig.align = 'center'}
+thisPSimple <- defParmFullDON
+odeRet <- data.frame(ode(y = yZeroSimple, 
+                           times = seq(0,tMax,length.out=101), 
+                           func = simpleModel, 
+                           parms = thisPSimple, 
+                           method = "ode23"))
+
+par(las=1)
+par(mfrow = c(1,3))
+
+plot(odeRet$time,
+     odeRet$S,
+     ty="l",
+     col="forestgreen",
+     lwd=2,
+     xlab="t, time (days)",
+     ylab="Spikes (per square metre)",
+     main="DON. Spikes",
+     ylim=c(0,siMax),lty=3)
+lines(odeRet$time,
+      odeRet$I,
+      lwd=2,
+      col="red2",lty=3)
+
+lines(odeRetDONFull$time,
+     odeRetDONFull$S,
+     lty=1,lwd=2,col="forestgreen")
+
+lines(odeRetDONFull$time,
+     odeRetDONFull$I,
+     lty=1,lwd=2,col="red2")
+
+legend("topright",
+       c("S","I","S (full)","I (full)"),
+       col=c("forestgreen","red2"),
+       lwd=2,
+       lty=c(3,3,1,1),ncol=2)
+
+plot(odeRet$time,
+     odeRet$U,
+     ty="l",
+     col="green",
+     lwd=2,
+     xlab="t, time (days)",
+     ylab="Alates (per square metre)",
+     main="DON. Alates (per square metre)",
+     ylim=c(0,totAlateMax),lty=3)
+lines(odeRet$time,
+      odeRet$V,
+      lwd=2,
+      col="deeppink",lty=3)
+
+fullU <- odeRetDONFull$S * odeRetDONFull$US + odeRetDONFull$I * odeRetDONFull$UI
+fullV <- odeRetDONFull$S * odeRetDONFull$VS + odeRetDONFull$I * odeRetDONFull$VI
+
+fullUPerSpike <- fullU / (odeRetDONFull$S + odeRetDONFull$I)
+fullVPerSpike <- fullV / (odeRetDONFull$S + odeRetDONFull$I)
+
+lines(odeRetDONFull$time,
+     fullU,
+     lty=1,lwd=2,col="green")
+
+lines(odeRetDONFull$time,
+     fullV,
+     lty=1,lwd=2,col="deeppink")
+
+legend("topright",
+       c("U","V", "U (full)", "V (full)"),
+       col=c("green","deeppink"),
+       lwd=2,
+       lty=c(3,3,1,1),ncol=2)
+
+plot(odeRet$time,
+     odeRet$U/(odeRet$S+odeRet$I),
+     ty="l",
+     col="green",
+     lwd=2,
+     xlab="t, time (days)",
+     ylab="Alates (per spike)",
+     main="DON. Alates (per spike)",
+     ylim=c(0,maxPerSpike),lty=3)
+lines(odeRet$time,
+      odeRet$V/(odeRet$S+odeRet$I),
+      lwd=2,
+      col="deeppink",lty=3)
+lines(odeRetDONFull$time,
+     fullUPerSpike,
+     lty=1,lwd=2,col="green")
+lines(odeRetDONFull$time,
+     fullVPerSpike,
+     lty=1,lwd=2,col="deeppink")
+legend("topright",
+       c("U/(S+I)","V/(S+I)", "U/(S+I) (full)", "V/(S+I) (full)"),
+       col=c("green","deeppink"),
+       lwd=2,
+       lty=c(3,3,1,1))
+```
