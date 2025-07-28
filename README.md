@@ -1,0 +1,1 @@
+The files in this repository provide a reference implementation of the models discussed in "Modelling aphid mediated dynamics of Fusarium head blight" (Jeger, Ray, Simon & Cunniffe) by providing code to replicate Figures 2 and 3 in the m/s.
